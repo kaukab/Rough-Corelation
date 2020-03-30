@@ -1,0 +1,915 @@
+---
+title: "Careem take home test"
+output:
+  pdf_document: default
+  html_notebook: default
+  html_document: default
+---
+
+
+
+```{r , echo=FALSE, include=FALSE}
+library(dplyr)
+library(ggplot2)
+library(gridExtra)
+library(grid)
+library(caret)
+options(tinytex.verbose = TRUE)
+```
+
+### Load Data
+```{r, raw Data}
+raw_data <- read.csv("train.csv" , stringsAsFactors = FALSE)
+head(raw_data)
+```
+
+#### Change data type to factor wherever number of levels < 7
+```{r, data_types}
+data_type_df <- as.data.frame(sapply(raw_data, class), col.names ="type" )
+colnames(data_type_df) <- "type"
+data_type_df$type <- as.character(data_type_df$type)
+data_type_df$unique_count <- -1
+data_type_df$na_flag <- FALSE
+data_type_df["X", "unique_count"]
+
+for (col in colnames(raw_data) ) {
+    no_of_unique_value = (length(unique(raw_data[,col])))
+    data_type_df[col, "unique_count"] <- no_of_unique_value
+    
+    if (sum(is.na(raw_data[ , col ])) > 0){
+        data_type_df[col, "na_flag"] <- TRUE
+    }
+    
+    if (no_of_unique_value < 7){
+        if (no_of_unique_value > 2){
+        raw_data[ , col ] <- as.factor(raw_data[ , col ])
+        data_type_df[col, "type"] <- "factor"
+            }
+    }
+}
+print(dim(raw_data))
+data_type_df
+```
+
+### Some type conversions
+-- creation_date to date from string
+-- rating as numeric and factor
+-- ad variable average-speed in kmph
+```{r,time_speed, echo=FALSE}
+raw_data$creation_date <- as.POSIXct(raw_data$creation_date)
+raw_data$rating_numeric <- as.numeric(as.character(raw_data$rating))
+raw_data$avg_speed <- 60*raw_data$distance_travelled / raw_data$duration_time
+head(raw_data)
+```
+
+
+# 1.1 We think, the higher a captain's average speed the higher his/her rating. We think customers like speedy rides!
+**** 150 km perhour is resonable high speed. So anything more than that has some data-collection issue probably So removing such data.
+
+##### Check the distribution of average speead by rating
+```{r, echo=FALSE}
+ggplot(filter(raw_data, avg_speed < 150, 
+                rating_numeric > 0)) + 
+  geom_histogram(aes(x=avg_speed, fill = rating)) + 
+  ggtitle("Car speed Histogram")+
+  theme_bw()
+
+```
+
+
+##### Check the density of average speead by rating 
+```{r, echo=FALSE}
+ggplot(filter(raw_data, avg_speed < 150, 
+                rating_numeric > 0)) + 
+  geom_density(aes(x=avg_speed, color = rating), size = 2) + 
+  ggtitle("Car speed Density plot")+
+  theme_bw()
+
+```
+
+##### Trip Rating Histogram - Most people rate 5 or do-not rate
+```{r, echo=FALSE}
+
+ggplot(raw_data) + 
+  geom_histogram(aes(x=rating_numeric, fill = car_type)) + 
+  ggtitle( "Trip Rating Histogram")+
+  theme_bw()
+
+```
+
+
+##### Average speed vs trip rating plot - the box plot and scatter plot do indicate some co-realtion
+```{r, echo=FALSE}
+
+g1 <- ggplot(filter(raw_data, avg_speed < 150, 
+                rating_numeric > 0)) + 
+  geom_point(aes(x=avg_speed, y = rating_numeric, color = car_type)) + 
+  labs(title = "Speed vs Rating",
+      subtitle = "It does appear that when avg speed is more then higher rating points are more.",
+              caption =""
+      )+
+  theme_bw()
+
+
+g2 <- ggplot(filter(raw_data, avg_speed < 150, 
+                rating_numeric > 0)) + geom_boxplot(aes(x=rating, y = avg_speed, color = car_type)) + 
+      labs( title = "Speed vs Rating Box plot",
+            subtitle = "It does appear that when avg speed is more then higher rating points are more.",
+            caption = paste("")
+          )+
+  theme_bw()
+
+grid.arrange( g1, g2, nrow=2)
+
+```
+
+
+
+
+#### 1.1 At aggreagte level there does not apear to be relation between average Speed and rating
+#### Null hypothesis average speed in each rating group(1-5) is same
+```{r}
+
+aov2 <- aov(avg_speed~rating , 
+            data =filter(raw_data, avg_speed < 150, 
+                          rating_numeric > 0)
+            )
+summary(aov2)
+
+
+ggplot(filter(raw_data, avg_speed < 150, 
+                rating_numeric > 0)) + 
+  geom_density(aes(x=avg_speed, color = rating), size = 2) + 
+labs( title = "Speed vs Rating Density plot - looks similar",
+            subtitle = paste("ANOVA p-value  = ",unlist(summary(aov2))[9]),
+            caption = paste("Unableto reject null hypothesis")
+          )+  theme_bw()
+## There apears to be no significant observed difference in speed in 2 groups
+
+```
+
+#### Lets zoom in and observe - 
+##### Segmentation 
+- where speed is > 60km per hour  = Hi-speed - and this metric will be used for propotion
+- 4 and 5 rating are considered high. Thus we have 2 groups of rating
+
+Null hypothesis = percentage of trips in hi-speed are less than or equal to percentage of trips in Low rating group -- see plot for result
+
+It does appear that when average speed is  greater  than 60 km per hour then the customers tend to give higher rating. 
+****Note : The number 60 was chosen randomly and not traced backwardly to observe the effect
+```{r}
+
+
+
+raw_data$grouped_rating <- as.factor(ifelse(raw_data$rating_numeric > 3, "Hi-rating", "Low-rating"))
+raw_data$speed_partion <- as.factor(ifelse(raw_data$avg_speed > 60, "Hi-speed", "Low-speed"))
+
+group_by(raw_data, grouped_rating, speed_partion) %>%
+  summarise(n())
+
+
+# 2 proportion test Hi-Speed to Low-speed in 2 groups of high rating and low rating
+prop_test <- prop.test(x = c(232, 334), n = c(16181, 33357), 
+                       alternative = c("greater"))
+(prop_test)
+
+ggplot(filter(raw_data, avg_speed >60, avg_speed <150,
+                rating_numeric > 0)) + 
+  geom_density(aes(x=avg_speed, color = (grouped_rating)),size=2 ) + 
+  labs(title = "Car speed Histogram for speed > 60 kmph",
+              subtitle = "The proportion of high-speed is higher in trips that are highly rated ",
+              caption = paste("The p value for 2 prop test", prop_test$p.value))+
+  theme_bw()
+
+
+
+
+```
+
+
+
+## 1.2. Our customers can request a trip price estimation by putting the destination address but it's not required. If a customer requests the price estimation, estimated_price column isn't empty and contains the price our algorithms predict for the trip. We suppose, there is a dependence: customers are more likely to request a trip price if they are going far.
+
+
+#### So we define 2 groups as group that requests estimated price and the other that doe not. And we conduct t-test one sided to see whether the average distance is greater or not in one group, can be inferred or not from the sample dat - results in plot
+
+```{r, echo=FALSE}
+
+raw_data$estimated_price_flag <- as.factor(ifelse(raw_data$estimated_price>0,1,0 ))
+
+winsorized_data <- filter(raw_data, distance_travelled < quantile(raw_data$distance_travelled, 0.995))
+
+ggplot(winsorized_data) + 
+  geom_boxplot(aes(x=estimated_price_flag, y = distance_travelled, color = estimated_price_flag) ) + 
+      labs( title = "Distance vs Price estimate requested",
+            subtitle = "Box plot shows difference in average distance",
+            caption = paste("")
+          )+
+  theme_bw()
+
+
+
+## T test to see whether average distance travelled in 2 group are different by chance ?
+ttest_dist_estprice <- t.test(filter(winsorized_data, estimated_price_flag ==1)$distance_travelled, 
+       filter(winsorized_data, estimated_price_flag ==0)$distance_travelled, 
+       alternative = "greater", var.equal = FALSE)
+
+(ttest_dist_estprice)
+
+
+ggplot(winsorized_data) + 
+  geom_density(aes(x=distance_travelled, color = estimated_price_flag), size=2) + 
+  labs(title = "Distance travelled -  density plot ",
+      subtitle = "Average distance travelled is more when someone requests price-estimate",
+      caption = paste("p-value, H0: mu1<=m0 (estimated price flag)   : ", ttest_dist_estprice$p.value)
+      )+
+  theme_bw()
+
+```
+
+
+
+# 2. Hypotheses and insights bringing.
+## Cool to warm up, isn't it? Your understanding of the business process and creativity are rapidly growing and urgently needed at Careem! Inspired by the previous examples, can you come up with a couple of interesting hypotheses and check them out? Explain what you've found to your team leader and product manager, convince them that you are right. For example, you can cluster the trips and then give a meaningful descriptions to the groups you found.
+
+##### Deriving some more variables for analysis
+-- weekday = Sunday, Monday, Tuesday ......
+-- hour of day = 1AM, 2PM etc.
+-- bin hour of day -- 00hrs to 3 hours as "grave-yard shift", 400hrs to 2000hrs as leisure, and rest as leisure
+-- bin weekday = Fri and Sat as Weekend
+-- bin rating =  4 an 5 as Hi rating
+-- bin speed = > 60kmph as hi speed
+```{r, echo=FALSE}
+raw_data$weekday <- as.factor(weekdays(raw_data$creation_date, abbreviate = T))
+raw_data$hour_of_day <- as.numeric(substr(raw_data$creation_date, 12, 13))
+raw_data$hour_of_day_factor <- as.factor(raw_data$hour_of_day)
+# There are many ways of doing dicretization. ight now it is based on hunch
+raw_data$shift_of_day <- as.factor(case_when(raw_data$hour_of_day<4 ~ "grave-yard",
+                                             raw_data$hour_of_day>20 ~ "leisure",
+                                             raw_data$hour_of_day>3 ~ "work"
+                                             )
+                                   )
+raw_data$weekday_flag <- as.factor(case_when(raw_data$weekday %in% c("Fri", "Sat") ~ "Weekend",
+                                             TRUE ~ "Weekday"
+                                             )
+                                   )
+raw_data$grouped_rating <- as.factor(ifelse(raw_data$rating_numeric > 3, "Hi-rating", "Low-rating"))
+raw_data$speed_partion <- as.factor(ifelse(raw_data$avg_speed > 60, "Hi-speed", "Low-speed"))
+
+head(raw_data)
+data_type_df
+```
+
+
+##### Visualization : Avg no of trips distribution by time of day - weekday vs weekend
+```{r, echo=FALSE}
+avg_hourly_trips <- group_by(raw_data, hour_of_day, weekday_flag) %>%
+  summarise(ct = n() ) %>%
+  mutate(avg_trips = ct/ifelse(weekday_flag==0,2,5))
+
+ggplot(avg_hourly_trips) + 
+  geom_line(aes(x=hour_of_day, y=avg_trips, color = weekday_flag), size=1) + 
+  labs(title = "Average no of trips per day on Weekdays vs Weekend",
+      subtitle = "",
+              caption = ""
+      )+
+  theme_bw()
+
+```
+##### Visualization : Demand Peaks distribution by time of day on different weekdays
+
+```{r, echo=FALSE}
+total_hourly_trips <- group_by(raw_data, hour_of_day, weekday) %>%
+  summarise(no_of_trips = n() )
+
+ggplot(total_hourly_trips) + 
+  geom_line(aes(x=hour_of_day, y=no_of_trips, color = weekday), size=1) + 
+  labs(title = "Total hourly trips",
+      subtitle = "Number of trips are less on Friday",
+              caption = ""
+      )+
+  theme_bw()
+
+```
+
+
+
+##### Demand percentage are different for weekdays and weekends.
+##### We observe from the sample data that percentage trips on weekend are more after 1 pm 
+```{r}
+
+
+
+raw_data %>%
+  mutate(some_flag = ifelse(as.numeric(as.character(hour_of_day)) >= 13, "Post-1-PM", "Pre-1-PM")) %>%
+group_by(weekday_flag,
+         some_flag
+         ) %>%
+  summarise(ct=n())
+
+# 2 proportion test 
+prop_test <- prop.test(x = c(6993, 20156), n = c(11573, 39510))
+(prop_test)
+
+ggplot(raw_data) + 
+  geom_density(aes(x=hour_of_day, color = weekday_flag), size=1) + 
+  labs(title = "Hour of day -  density plot - Demand Peaks on different weekdays",
+       subtitle = "Alternate Hypothesis: Percentage trips after 1 PM are greater on Weekends",
+       caption = paste("2 proportion test    p value : ", prop_test$p.value, " --- Reject null hypothesis")
+      )+
+  theme_bw()
+
+```
+
+
+
+#### How does distance travelled differs on different days
+##### Average distance on different day of week are different - See visulaization -
+##### Null hypothesis is rejected
+```{r, echo=FALSE}
+
+aov2 <- aov(distance_travelled~weekday , 
+            data =raw_data
+            )
+summary(aov2)
+
+
+ggplot(raw_data) + 
+  geom_density(aes(x=distance_travelled, color = weekday), size=1) + 
+  labs(title = "Distance travelled -  density plot ",
+      subtitle = "Average distance travleed on differaent week of day are different - based on F statistics",
+              caption =  paste("Anova p-value  = ",unlist(summary(aov2))[9])
+      )+
+  theme_bw()
+
+
+```
+
+#### How does distance travelled differs on different days and weekday vs weekend
+##### Average distance on weekday vs weeked - See visulaization -
+
+```{r, echo=FALSE}
+#H0 Avg distance travelled on weekday <= Avg distance travelled on weekday
+
+ttest_dist_weekend <- t.test(filter(raw_data, weekday_flag == "Weekend")$distance_travelled, 
+       filter(raw_data, weekday_flag =="Weekday")$distance_travelled, 
+       alternative = "greater", var.equal = FALSE)
+
+ttest_dist_weekend
+
+ggplot(raw_data) + 
+  geom_density(aes(x=distance_travelled, color = weekday_flag), size=1) + 
+  labs(title = "Distance travelled -  density plot ",
+      subtitle = "H0 Avg distance on weekday <= Avg distance on weekend",
+              caption = paste("t test p value :", ttest_dist_weekend$p.value, " --- Reject the H0")
+      )+
+  theme_bw()
+
+```
+
+
+
+#### How does distance travelled differs during different hours
+##### Based on sample data one can infer that average distance travled, do differ 
+```{r, echo=FALSE}
+
+aov3 <- aov(distance_travelled~hour_of_day_factor , 
+            data =raw_data
+            )
+summary(aov3)
+
+
+ggplot(raw_data) + 
+  geom_density(aes(x=distance_travelled, color = hour_of_day_factor), size=1) + 
+  labs(title = "Distance travelled -  density plot ",
+      subtitle = "Average distance travleed during different hours are different - based on F statistics",
+              caption =  paste("Anova p-value  = ",unlist(summary(aov3))[9])
+      )+
+  theme_bw()
+
+
+```
+
+
+#### How does distance travelled differs during different hours binned
+```{r, echo=FALSE}
+
+aov4 <- aov(distance_travelled~shift_of_day , 
+            data =raw_data
+            )
+summary(aov4)
+
+
+ggplot(raw_data) + 
+  geom_density(aes(x=distance_travelled, color = shift_of_day), size=1) + 
+  labs(title = "Distance travelled -  density plot ",
+      subtitle = "Average distance travleed during different hours(binned) are different - based on F statistics",
+              caption =  paste("Anova p-value  = ",unlist(summary(aov4))[9])
+      )+
+  theme_bw()
+
+
+```
+
+
+##### Rating and time of day are not independent
+###### We try to see if the ***percentage of Hi rating***  is same across different time-slots
+###### We observe difference in percentage of rating
+```{r, echo=FALSE}
+winsorized_data <- filter(raw_data, rating_numeric > 0)
+
+cont_table <- table(winsorized_data$grouped_rating, winsorized_data$shift_of_day)
+freq_df <- as.data.frame(cont_table)
+freq_df$n <- c(778, 778, 1714, 1714, 32385, 32385)
+freq_df$prop <- freq_df$Freq / freq_df$n
+freq_df
+
+
+indp_test <- chisq.test(cont_table) 
+
+
+group_by(winsorized_data, shift_of_day) %>%
+  summarise(avg_rating = mean(rating_numeric),
+            median_rating = median(rating_numeric)
+            )
+
+
+ggplot(winsorized_data) + 
+  geom_density(aes(x=rating_numeric, color = shift_of_day), size=1) + 
+  labs(title = "Rating proportions are not idependent of shift of the day ",
+      subtitle = "Alternative Hypotheis: Proportion of rating are same across all time slots",
+      caption = paste("2 way table chi square P value ", indp_test$p.value)
+      )+
+  theme_bw()
+
+```
+
+##### Rating proportions - Hi Rating(4 and 5) vs low rating on weekday vs weekend
+###### We try to see if the ***percentage of Hi rating***  is same on Weekdaya vs Weekend
+###### We observe no difference - unable to reject null hypothesis
+
+```{r, echo=FALSE}
+
+winsorized_data <- filter(raw_data, rating_numeric > 0)
+
+freq_df <- as.data.frame(table(winsorized_data$grouped_rating, winsorized_data$weekday_flag))
+freq_df$n <- c(26920, 26920, 7957, 7957)
+freq_df$prop <- freq_df$Freq / freq_df$n
+freq_df
+
+
+# 2 proportion test 
+prop_test <- prop.test(x = c(25771, 7613), n = c(26920, 7957))
+(prop_test)
+
+
+
+group_by(winsorized_data, weekday_flag) %>%
+  summarise(avg_rating = mean(rating_numeric),
+            median_rating = median(rating_numeric)
+            )
+
+
+ggplot(winsorized_data) + 
+  geom_density(aes(x=rating_numeric, color = weekday_flag), size=1) + 
+  labs(title = "Rating density -  Weekday vs weekend ",
+      subtitle = "Non Gausian",
+      caption = "Differece between Proportion of High rating  in 2 group is not significant"
+      )+
+  theme_bw()
+
+```
+
+
+##### Clustering trips based on following fields
+##### I am unable to see some good business centred clusters. I will have to filter data and remove some categorical data may be to see some insights. I can do such analysis if I invest more time.
+##### If I do extrinsc evaluation on rating, then most of cluster centre look same for numeric variable
+--booking_source
+-- car_type
+-- distance_travelled
+-- duration_time
+-- price
+-- speed_partion
+-- weekday_flag
+-- shift_of_day
+-- rating
+
+```{r}
+selected_vars <- filter(raw_data , avg_speed<=150) %>%
+                  select(booking_source,
+                        car_type,
+                        distance_travelled,
+                        duration_time,
+                        price,
+                        avg_speed,
+                        weekday_flag,
+                        shift_of_day,
+                        rating
+                        )
+dmy <- dummyVars("~.", data = selected_vars)
+trsf <- data.frame(predict(dmy, newdata = selected_vars))
+head(trsf)
+normalize <- function(x){
+  return ((x - min(x))/(max(x) - min(x)))}
+
+data_normalized = mutate(trsf, 
+                         distance_travelled = normalize(distance_travelled),
+                         duration_time = normalize(duration_time),
+                         price = normalize(price),
+                         avg_speed = normalize(avg_speed)
+                         )
+
+head(data_normalized)
+
+#summary(data_normalized)
+#kcluster <- kmeans(data_normalized, 3)
+
+SSE_curve <- c()
+max_clust = 20
+for (n in 1:max_clust) {
+  kcluster <- kmeans(data_normalized, n)
+  #print(kcluster$withinss)
+  sse <- sum(kcluster$withinss)
+  SSE_curve[n] <- sse
+}
+plot(1:max_clust, SSE_curve, type="b", xlab="Number of Clusters", ylab="SSE")
+
+kcluster <- kmeans(data_normalized, 2)
+
+
+#kcluster$size
+kcluster$centers
+#kcluster$cluster
+
+```
+
+
+
+##### If time permits , I want to derive for each customer, number of trips, max_distance, average_distance, max_rating, min_rating, median_time_of_day, source_of_order etc and cluster to see if any insight can be generated 
+
+--booking_source
+-- car_type
+-- distance_travelled
+-- duration_time
+-- price
+-- rating
+-- speed_partion
+-- weekday_flag
+-- shift_of_day
+```{r}
+
+```
+
+
+
+
+
+
+
+# 3. Rating prediction
+
+##### Deriving some more variables for analysis
+I am deriving several variables her such as week of day, hour of day, average spped. SOme of these
+variables has been discreetized also, e.g. hour of daya - as order does not makes much sense.
+Few other variables that has been derived are difference in distance - as those reflect pain point of customers. Few customer specifica and driver specific variables also has been derived.
+No feature selection has been done as Random-forest is able to select good variables heuristically.
+```{r}
+
+raw_data <- read.csv("train.csv" , stringsAsFactors = FALSE)
+raw_data$rating <- as.factor(raw_data$rating)
+raw_data$creation_date <- as.POSIXct(raw_data$creation_date)
+raw_data$rating_numeric <- as.numeric(as.character(raw_data$rating))
+raw_data$avg_speed <- 60*raw_data$distance_travelled / raw_data$duration_time
+raw_data$grouped_rating <- as.factor(ifelse(raw_data$rating_numeric > 3, "Hi-rating", "Low-rating"))
+raw_data$speed_partion <- as.factor(ifelse(raw_data$avg_speed > 60, "Hi-speed", "Low-speed"))
+raw_data$weekday <- as.factor(weekdays(raw_data$creation_date, abbreviate = T))
+raw_data$hour_of_day <- as.numeric(substr(raw_data$creation_date, 12, 13))
+raw_data$hour_of_day_factor <- as.factor(raw_data$hour_of_day)
+# There are many ways of doing dicretization. ight now it is based on hunch
+raw_data$shift_of_day <- as.factor(case_when(raw_data$hour_of_day<4 ~ "grave-yard",
+                                             raw_data$hour_of_day>20 ~ "leisure",
+                                             raw_data$hour_of_day>3 ~ "work"
+                                             )
+                                   )
+raw_data$weekday_flag <- as.factor(case_when(raw_data$weekday %in% c("Fri", "Sat") ~ "Weekend",
+                                             TRUE ~ "Weekday"
+                                             )
+                                   )
+raw_data$grouped_rating <- as.factor(ifelse(raw_data$rating_numeric > 3, "Hi-rating", "Low-rating"))
+raw_data$speed_partion <- as.factor(ifelse(raw_data$avg_speed > 60, "Hi-speed", "Low-speed"))
+
+
+
+trip_rating <- read.csv("trip_rating.csv" , stringsAsFactors = FALSE)
+#head(trip_rating)
+
+customer_rating_hist <- filter(trip_rating, rating > 0) %>%
+                group_by(customer_id) %>%
+                summarise(avg_rating = mean(rating),
+                          max_rating = max(rating),
+                          min_rating = min(rating),
+                          trip_ct = n()
+                          ) %>%
+                full_join(filter(trip_rating, rating == 0) %>%
+                          group_by(customer_id) %>%
+                          summarise( trip_ct_0 = n()  )) 
+
+customer_rating_hist[is.na(customer_rating_hist)] <- 0
+customer_rating_hist <- mutate(customer_rating_hist,
+                               will_rate = trip_ct/(trip_ct_0+trip_ct)
+                              )
+
+driver_rating_hist <- filter(trip_rating, rating > 0) %>%
+                group_by(driver_id) %>%
+                summarise(avg_dr_rating = mean(rating),
+                          max_dr_rating = max(rating),
+                          min_dr_rating = min(rating),
+                          trip_dr_ct = n()
+                          ) %>%
+                full_join(filter(trip_rating, rating == 0) %>%
+                          group_by(driver_id) %>%
+                          summarise( trip_dr_ct_0 = n()  )) 
+
+driver_rating_hist[is.na(driver_rating_hist)] <- 0
+driver_rating_hist <- mutate(driver_rating_hist,
+                               will_dr_rate = trip_dr_ct/(trip_dr_ct_0+trip_dr_ct)
+                              )
+
+
+
+raw_data2 <- left_join(raw_data, customer_rating_hist) %>%
+              left_join(driver_rating_hist)
+
+raw_data2[is.na(raw_data2)] <- 0
+raw_data2$was_rated <- as.factor(raw_data2$was_rated)
+raw_data2$toal_trip <- (raw_data2$trip_ct + raw_data2$trip_ct_0)
+raw_data2$toal_dr_trip <- (raw_data2$trip_dr_ct + raw_data2$trip_dr_ct_0)
+
+
+raw_data2$dist_difference <- (raw_data2$distance_travelled - raw_data2$distance_travelled_while_moving)
+
+
+
+test_index <-  sample(51083, 0.2*51083, replace = FALSE)
+test <- raw_data2[test_index,]
+train <- raw_data2[setdiff((1:51083), test_index),]
+
+
+
+```
+
+
+##### Prepare hold out data in the derived format for scoring purpose
+```{r}
+hold_out <- read.csv("test.csv" , stringsAsFactors = FALSE)
+
+
+
+process_df <- function(input1, input2)
+{
+  
+  input1$creation_date <- as.POSIXct(input1$creation_date)
+  if ("rating" %in% colnames(input1)){
+    1
+  }
+  else{
+    input1$rating <- -1
+    input1$was_rated <- -1
+  }
+  
+input1$avg_speed <- 60*input1$distance_travelled / input1$duration_time
+input1$speed_partion <- as.factor(ifelse(input1$avg_speed > 60, "Hi-speed", "Low-speed"))
+input1$weekday <- as.factor(weekdays(input1$creation_date, abbreviate = T))
+input1$hour_of_day <- as.numeric(substr(input1$creation_date, 12, 13))
+input1$hour_of_day_factor <- as.factor(input1$hour_of_day)
+# There are many ways of doing dicretization. ight now it is based on hunch
+input1$shift_of_day <- as.factor(case_when(input1$hour_of_day<4 ~ "grave-yard",
+                                             input1$hour_of_day>20 ~ "leisure",
+                                             input1$hour_of_day>3 ~ "work"
+                                             )
+                                   )
+input1$weekday_flag <- as.factor(case_when(input1$weekday %in% c("Fri", "Sat") ~ "Weekend",
+                                             TRUE ~ "Weekday"
+                                             )
+                                   )
+
+customer_rating_hist <- filter(input2, rating > 0) %>%
+                group_by(customer_id) %>%
+                summarise(avg_rating = mean(rating),
+                          max_rating = max(rating),
+                          min_rating = min(rating),
+                          trip_ct = n()
+                          ) %>%
+                full_join(filter(input2, rating == 0) %>%
+                          group_by(customer_id) %>%
+                          summarise( trip_ct_0 = n()  )) 
+
+customer_rating_hist[is.na(customer_rating_hist)] <- 0
+customer_rating_hist <- mutate(customer_rating_hist,
+                               will_rate = trip_ct/(trip_ct_0+trip_ct)
+                              )
+
+driver_rating_hist <- filter(input2, rating > 0) %>%
+                group_by(driver_id) %>%
+                summarise(avg_dr_rating = mean(rating),
+                          max_dr_rating = max(rating),
+                          min_dr_rating = min(rating),
+                          trip_dr_ct = n()
+                          ) %>%
+                full_join(filter(input2, rating == 0) %>%
+                          group_by(driver_id) %>%
+                          summarise( trip_dr_ct_0 = n()  )) 
+
+driver_rating_hist[is.na(driver_rating_hist)] <- 0
+driver_rating_hist <- mutate(driver_rating_hist,
+                               will_dr_rate = trip_dr_ct/(trip_dr_ct_0+trip_dr_ct)
+                              )
+
+
+
+output <- left_join(input1, customer_rating_hist) %>%
+              left_join(driver_rating_hist)
+
+output[is.na(output)] <- 0
+output$toal_trip <- (output$trip_ct + output$trip_ct_0)
+output$toal_dr_trip <- (output$trip_dr_ct + output$trip_dr_ct_0)
+
+
+output$dist_difference <- (output$distance_travelled - output$distance_travelled_while_moving)
+
+return(output)
+}
+
+
+hold_out2 <- process_df(hold_out, trip_rating)
+
+```
+
+
+
+
+##### 3.2 Model creation - Decision Tree
+```{r}
+library(caret)
+library(rpart)
+library(rattle)
+
+ggplot(train, aes(x =was_rated, fill = rating))+
+         geom_bar(aes(y = (..count..)/sum(..count..))) + 
+        scale_y_continuous(labels = scales::percent)
+#is_cancelled +
+rpart1 <- rpart(was_rated ~ car_type + estimated_distance + distance_travelled +
+                  distance_travelled_while_moving + estimated_duration + duration_time +
+                  wait_time_initial + wait_time_in_journey + estimated_price + weekday +
+                  shift_of_day + weekday_flag + avg_rating + max_rating + min_rating + will_rate+
+                  price +  avg_speed + toal_trip + is_cancelled + speed_partion + dist_difference+
+                  avg_dr_rating + min_dr_rating + will_dr_rate + toal_dr_trip
+                  , data = train, 
+                control = rpart.control(cp = 0.0005, maxdepth = 30, minsplit=10))
+#plot(rpart1)
+fancyRpartPlot(rpart1)
+#rpart1
+
+```
+
+##### 3.2 Model evaluation - Decision Tree
+```{r}
+rpartPred1 <- predict(rpart1, test)
+
+pred_y <- (rpartPred1[,2] >= 0.5)*1
+
+error_percentage <- mean(pred_y != test$was_rated)
+paste("Miss-classification percentage   " , error_percentage)
+
+require(ROCR)
+results <- prediction(predictions = rpartPred1[,2], labels = test$was_rated)
+auc_s4 <- performance(results, measure = "auc")
+paste("AUC     ",auc_s4@y.values[[1]])
+
+# ROC curve
+ROC.curve <- performance(results, measure = "tpr", x.measure = "fpr")
+plot(ROC.curve, main = "ROC curve ", colorize=T, 
+     print.cutoffs.at=seq(0,1,by=0.3))
+
+PR.curve <- performance(results, measure = "prec", x.measure = "rec")
+plot(PR.curve, main = "Precision-Recall curve ", colorize=T,
+     print.cutoffs.at=seq(0,1,by=0.3))
+
+```
+
+##### 3.3 H2o Radnom Forest setup
+```{r, echo=FALSE}
+library(h2o)
+#h2o.shutdown(prompt = FALSE)
+localH2O = h2o.init( nthreads = -1)
+#h2o.checkClient(localH2O)
+
+
+train.h2o <- as.h2o(dplyr::select(train, -c(creation_date))
+, destination_frame="train.h2o")
+
+test.h2o <- as.h2o(dplyr::select(test, -c(creation_date))
+, destination_frame="test.h2o")
+
+```
+```{r}
+independent <- c("car_type", "estimated_distance", "distance_travelled", "distance_travelled_while_moving", 
+"estimated_duration", "duration_time", "wait_time_initial", "wait_time_in_journey", 
+"estimated_price", "weekday","shift_of_day", "weekday_flag", "avg_rating", "max_rating", 
+"min_rating" ,  "will_rate", "price", "avg_speed", "toal_trip", "is_cancelled", "dist_difference",
+"avg_dr_rating", "min_dr_rating", "will_dr_rate", "toal_dr_trip"
+)
+dependent <- "was_rated"
+
+train.h2o <- as.h2o(train[c(independent, dependent)]
+                  , destination_frame="train.h2o")
+
+test.h2o <- as.h2o(test[c(independent, dependent)]
+, destination_frame="test.h2o")
+
+
+gbm.h2o.fit <- h2o.randomForest(training_frame = train.h2o, 
+                       y = dependent, 
+                       x = independent, 
+                       model_id = "XGPojo", 
+                       ntrees = 100,
+                       seed = 1000000)
+
+
+#Model Description
+gbm.h2o.fit
+
+
+### Variable Importance
+
+as.data.frame(h2o.varimp(gbm.h2o.fit))
+```
+
+##### Check performance of Random-Forest - Accuracy, AUC, Precision & Recall
+```{r}
+finalRf_predictions<-h2o.predict(
+  object = gbm.h2o.fit
+  ,newdata = test.h2o)
+
+finalRf_predictions <- as.data.frame(finalRf_predictions)
+
+
+
+## %age Missclasification
+error_percentage <- mean(finalRf_predictions$predict != test$was_rated)
+paste("Miss-classification Rate   :", error_percentage)
+
+require(ROCR)
+results <- prediction(predictions = finalRf_predictions$p1, labels = test$was_rated)
+auc_s4 <- performance(results, measure = "auc")
+paste("AUC     ",auc_s4@y.values[[1]])
+
+
+# ROC curve
+ROC.curve <- performance(results, measure = "tpr", x.measure = "fpr")
+plot(ROC.curve, main = "ROC curve ", colorize=T, 
+     print.cutoffs.at=seq(0,1,by=0.3))
+
+PR.curve <- performance(results, measure = "prec", x.measure = "rec")
+plot(PR.curve, main = "Precision-Recall curve ", colorize=T,
+     print.cutoffs.at=seq(0,1,by=0.3))
+
+
+
+
+```
+
+
+##### Apply model on hold-out
+```{r}
+# This is just being done because there is bug in the package, as it is expecting label column in
+# scoring method als0 - else it throws data-structure mismatch
+hold_out2$was_rated <- 1
+hold_out2$was_rated <- as.factor(hold_out2$was_rated)
+
+hold_out.h2o <- train.h2o <- as.h2o(hold_out2[c(independent, dependent)]
+                  , destination_frame="train.h2o")
+
+hold_out_prediction <- h2o.predict(
+                                    object = gbm.h2o.fit
+                                    ,newdata = hold_out.h2o
+                                    )
+
+hold_out_prediction <- as.data.frame(hold_out_prediction)
+
+
+hold_out <- read.csv("test.csv" , stringsAsFactors = FALSE)
+
+hold_out$predict <- hold_out_prediction$predict
+hold_out$p0 <- hold_out_prediction$p0
+hold_out$p1 <- hold_out_prediction$p1
+
+write.csv(hold_out, "predicted.csv")
+
+h2o.shutdown(prompt = FALSE)
+
+```
+
+
+
+
